@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Net.Http;
 
 using Azure.Identity;
 using Azure.Security.KeyVault.Certificates;
@@ -46,6 +47,11 @@ namespace KeyVault.Acmebot
             builder.Services.Replace(ServiceDescriptor.Transient(typeof(IOptionsFactory<>), typeof(OptionsFactory<>)));
 
             builder.Services.AddHttpClient();
+            builder.Services.AddHttpClient("InSecure")
+                   .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+                   {
+                       ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                   });
 
             builder.Services.AddSingleton<ITelemetryInitializer, ApplicationVersionInitializer<Startup>>();
 

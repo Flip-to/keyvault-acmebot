@@ -23,7 +23,7 @@
               <div class="control">
                 <div class="select" :class="{ 'is-loading': loading }">
                   <select v-model="zoneName">
-                    <option disabled value="">Please select one</option>
+                    <option value="">HTTP Validation</option>
                     <option v-for="zone in zones" :value="zone">{{ toUnicode(zone) }}</option>
                   </select>
                 </div>
@@ -38,7 +38,7 @@
           <div class="field-body">
             <div class="field has-addons">
               <p class="control">
-                <input v-model="recordName" class="input" type="text" placeholder="Record name" :disabled="zoneName.length === 0">
+                <input v-model="recordName" class="input" type="text" placeholder="Record name">
               </p>
               <p class="control">
                 <a class="button is-static">
@@ -46,7 +46,7 @@
                 </a>
               </p>
               <p class="control">
-                <button class="button is-info" @click="add" :disabled="zoneName.length === 0">Add</button>
+                <button class="button is-info" @click="add">Add</button>
               </p>
             </div>
           </div>
@@ -243,13 +243,9 @@
           this.load();
         },
         add() {
-          if (this.zoneName === "") {
-            return;
-          }
+          const dnsName = this.recordName === "" ? this.zoneName : (punycode.toASCII(this.recordName) + "." + this.zoneName).replace(/\.$/g, "");
 
-          const dnsName = this.recordName === "" ? this.zoneName : punycode.toASCII(this.recordName) + "." + this.zoneName;
-
-          if (this.dnsNames.indexOf(dnsName) === -1) {
+          if (dnsName && this.dnsNames.indexOf(dnsName) === -1) {
             this.dnsNames.push(dnsName);
           }
 

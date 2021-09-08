@@ -1,8 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Threading.Tasks;
 
 using ACMESharp.Authorizations;
@@ -10,6 +13,7 @@ using ACMESharp.Protocol;
 using ACMESharp.Protocol.Resources;
 
 using Azure.Security.KeyVault.Certificates;
+using Azure.Storage.Blobs;
 
 using DnsClient;
 
@@ -29,10 +33,11 @@ namespace KeyVault.Acmebot.Functions
 {
     public class SharedActivity : ISharedActivity
     {
-        public SharedActivity(LookupClient lookupClient, AcmeProtocolClientFactory acmeProtocolClientFactory,
+        public SharedActivity(IHttpClientFactory httpClientFactory, LookupClient lookupClient, AcmeProtocolClientFactory acmeProtocolClientFactory,
                               IDnsProvider dnsProvider, CertificateClient certificateClient,
                               WebhookInvoker webhookInvoker, IOptions<AcmebotOptions> options, ILogger<SharedActivity> logger)
         {
+            _httpClientFactory = httpClientFactory;
             _acmeProtocolClientFactory = acmeProtocolClientFactory;
             _dnsProvider = dnsProvider;
             _lookupClient = lookupClient;
@@ -42,6 +47,7 @@ namespace KeyVault.Acmebot.Functions
             _logger = logger;
         }
 
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly LookupClient _lookupClient;
         private readonly AcmeProtocolClientFactory _acmeProtocolClientFactory;
         private readonly IDnsProvider _dnsProvider;
@@ -130,6 +136,86 @@ namespace KeyVault.Acmebot.Functions
 
             return await acmeProtocolClient.CreateOrderAsync(dnsNames);
         }
+
+        [FunctionName(nameof(Http01Precondition))]
+        public async Task Http01Precondition([ActivityTrigger] IReadOnlyList<string> dnsNames)
+        {
+            if (!await new BlobContainerClient(_options.AzureStorageConnectionString, _options.AzureStorageContainerName).ExistsAsync())
+            {
+                throw new PreconditionException($"Azure Storage container not found. Container = {_options.AzureStorageContainerName}");
+            }
+        }
+
+        [FunctionName(nameof(Http01Authorization))]
+        public async Task<IReadOnlyList<AcmeChallengeResult>> Http01Authorization([ActivityTrigger] IReadOnlyList<string> authorizationUrls)
+        {
+            var acmeProtocolClient = await _acmeProtocolClientFactory.CreateClientAsync();
+
+            var challengeResults = new List<AcmeChallengeResult>();
+
+            foreach (var authorizationUrl in authorizationUrls)
+            {
+                // Authorization の詳細を取得
+                var authorization = await acmeProtocolClient.GetAuthorizationDetailsAsync(authorizationUrl);
+
+                // HTTP-01 Challenge の情報を拾う
+                var challenge = authorization.Challenges.FirstOrDefault(x => x.Type == "http-01");
+
+                if (challenge == null)
+                {
+                    throw new InvalidOperationException("Simultaneous use of HTTP-01 and DNS-01 for authentication is not allowed.");
+                }
+
+                var challengeValidationDetails = AuthorizationDecoder.ResolveChallengeForHttp01(authorization, challenge, acmeProtocolClient.Signer);
+
+                // Challenge の情報を保存する
+                challengeResults.Add(new AcmeChallengeResult
+                {
+                    Url = challenge.Url,
+                    HttpResourceUrl = challengeValidationDetails.HttpResourceUrl,
+                    HttpResourcePath = challengeValidationDetails.HttpResourcePath,
+                    HttpResourceValue = challengeValidationDetails.HttpResourceValue
+                });
+            }
+
+            // Publish to azure blob storage
+            foreach (var challengeResult in challengeResults)
+            {
+                using var stream = new MemoryStream(Encoding.UTF8.GetBytes(challengeResult.HttpResourceValue));
+                await new BlobClient(_options.AzureStorageConnectionString, _options.AzureStorageContainerName, Path.GetFileName(challengeResult.HttpResourcePath))
+                    .UploadAsync(stream, overwrite: true);
+            }
+
+            return challengeResults;
+        }
+
+        [FunctionName(nameof(CheckHttpChallenge))]
+        public async Task CheckHttpChallenge([ActivityTrigger] IReadOnlyList<AcmeChallengeResult> challengeResults)
+        {
+            foreach (var challengeResult in challengeResults)
+            {
+                // 実際に HTTP でアクセスして確認する
+                var insecureHttpClient = _httpClientFactory.CreateClient("InSecure");
+
+                var httpResponse = await insecureHttpClient.GetAsync(challengeResult.HttpResourceUrl);
+
+                // ファイルにアクセスできない場合はエラー
+                if (!httpResponse.IsSuccessStatusCode)
+                {
+                    // リトライする
+                    throw new RetriableActivityException($"{challengeResult.HttpResourceUrl} is {httpResponse.StatusCode} status code.");
+                }
+
+                var fileContent = await httpResponse.Content.ReadAsStringAsync();
+
+                // ファイルに今回のチャレンジが含まれていない場合もエラー
+                if (fileContent != challengeResult.HttpResourceValue)
+                {
+                    throw new RetriableActivityException($"{challengeResult.HttpResourceUrl} is not correct. Expected: \"{challengeResult.HttpResourceValue}\", Actual: \"{fileContent}\"");
+                }
+            }
+        }
+
 
         [FunctionName(nameof(Dns01Precondition))]
         public async Task Dns01Precondition([ActivityTrigger] IReadOnlyList<string> dnsNames)
@@ -422,6 +508,17 @@ namespace KeyVault.Acmebot.Functions
                 var acmeDnsRecordName = dnsRecordName.Replace($".{zone.Name}", "", StringComparison.OrdinalIgnoreCase);
 
                 await _dnsProvider.DeleteTxtRecordAsync(zone, acmeDnsRecordName);
+            }
+        }
+
+        [FunctionName(nameof(CleanupHttpChallenge))]
+        public async Task CleanupHttpChallenge([ActivityTrigger] IReadOnlyList<AcmeChallengeResult> challengeResults)
+        {
+            // Delete from azure blob storage
+            foreach (var challengeResult in challengeResults)
+            {
+                await new BlobClient(_options.AzureStorageConnectionString, _options.AzureStorageContainerName, Path.GetFileName(challengeResult.HttpResourcePath))
+                    .DeleteAsync();
             }
         }
 

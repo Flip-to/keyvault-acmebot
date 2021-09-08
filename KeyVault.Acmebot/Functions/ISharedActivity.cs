@@ -22,6 +22,13 @@ namespace KeyVault.Acmebot.Functions
 
         Task<OrderDetails> Order(IReadOnlyList<string> dnsNames);
 
+        Task Http01Precondition(IReadOnlyList<string> dnsNames);
+
+        Task<IReadOnlyList<AcmeChallengeResult>> Http01Authorization(IReadOnlyList<string> authorizationUrls);
+
+        [RetryOptions("00:00:10", 12, HandlerType = typeof(ExceptionRetryStrategy<RetriableActivityException>))]
+        Task CheckHttpChallenge(IReadOnlyList<AcmeChallengeResult> challengeResults);
+
         Task Dns01Precondition(IReadOnlyList<string> dnsNames);
 
         Task<(IReadOnlyList<AcmeChallengeResult>, int)> Dns01Authorization(IReadOnlyList<string> authorizationUrls);
@@ -42,6 +49,8 @@ namespace KeyVault.Acmebot.Functions
         Task<CertificateItem> MergeCertificate((string, OrderDetails) input);
 
         Task CleanupDnsChallenge(IReadOnlyList<AcmeChallengeResult> challengeResults);
+
+        Task CleanupHttpChallenge(IReadOnlyList<AcmeChallengeResult> challengeResults);
 
         Task SendCompletedEvent((string, DateTimeOffset?, IReadOnlyList<string>) input);
     }

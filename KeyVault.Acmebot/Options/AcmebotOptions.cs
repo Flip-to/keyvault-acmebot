@@ -24,6 +24,10 @@ namespace KeyVault.Acmebot.Options
 
         public string PreferredChain { get; set; }
 
+        public string AzureStorageConnectionString { get; set; }
+
+        public string AzureStorageContainerName { get; set; }
+
         public ExternalAccountBindingOptions ExternalAccountBinding { get; set; }
 
         // Properties should be in alphabetical order
